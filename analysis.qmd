@@ -6,9 +6,87 @@ execute:
 ---
 
 ```{r}
+#| cache: true
 #| message: false
 library(tidyverse)
 library(purrr)
 library(leaflet)
 library(jsonlite)
+
+raw <- fromJSON("data/wildfires.geojson")
+print(length(raw$features))
+
+fire <- raw$features[1, ]
+names(fire)
+
+first_coordinate <- fire$geometry$coordinates[[1]][1, 1, ]
+first_coordinate
+
+fires <- jsonlite::read_json("data/wildfires.geojson") |>
+  pluck("features") |>
+  tibble(features = _) |>
+  unnest_wider(features) |>
+  unnest_wider(properties) |>
+  unnest_wider(geometry, names_sep = "_") |>
+  select(incident, gis_acres, fire_year, agency, state, geometry_coordinates) |>
+  mutate(
+    gis_acres = as.numeric(gis_acres),
+    fire_year = as.integer(fire_year)
+  )
+```
+
+```{r}
+august_fires <- fires |>
+  dplyr::filter(stringr::str_detect(incident, "August"))
+nrow(august_fires)
+
+dplyr::slice_max(fires, gis_acres, n = 10, with_ties = FALSE)
+```
+
+```{r}
+big_fires <- fires |>
+  dplyr::filter(gis_acres >= 100000) |>
+  dplyr::mutate(
+    representative_point = purrr::map(geometry_coordinates, \(coordinates) {
+      coordinates <- matrix(unlist(coordinates), ncol = 2, byrow = TRUE)
+      c(lon = mean(coordinates[, 1]), lat = mean(coordinates[, 2]))
+    })
+  ) |>
+  tidyr::unnest_wider(representative_point)
+```
+
+```{r}
+largest_fires <- big_fires |>
+  dplyr::slice_max(gis_acres, n = 10, with_ties = FALSE)
+coordinates <- purrr::map(
+  largest_fires$geometry_coordinates,
+  \(x) matrix(unlist(x), ncol = 2, byrow = TRUE)
+)
+all_coordinates <- do.call(rbind, coordinates)
+
+fire_map <- leaflet::leaflet() |>
+  leaflet::addTiles()
+for (i in seq_len(nrow(largest_fires))) {
+  popup <- paste0(
+    "<b>", largest_fires$incident[i], "</b><br>Year: ",
+    largest_fires$fire_year[i], "<br>Acres: ",
+    format(round(largest_fires$gis_acres[i]), big.mark = ",")
+  )
+  fire_map <- leaflet::addPolygons(
+    fire_map,
+    lng = coordinates[[i]][, 1],
+    lat = coordinates[[i]][, 2],
+    popup = popup,
+    weight = 1,
+    fillOpacity = 0.5
+  )
+}
+fire_map |>
+  leaflet::fitBounds(
+    min(all_coordinates[, 1]),
+    min(all_coordinates[, 2]),
+    max(all_coordinates[, 1]),
+    max(all_coordinates[, 2]),
+    options = list(padding = c(20, 20))
+  )
 ```
